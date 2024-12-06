@@ -10,7 +10,7 @@ This project uses survival analysis to predict the **bankruptcy risk** and **sur
 - **Size**: 78,682 firm-year records across 8,262 unique companies  
 - **Key Attributes**:
   - Financial variables like EBIT, Net Income, Gross Profit
-  - Status labels: `1` (alive) or `0` (bankrupt)
+  - Status labels: `0` (alive) or `1` (bankrupt)
 
 ---
 
