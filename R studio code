@@ -1,0 +1,326 @@
+# Load Data
+```{r}
+library(dplyr)
+data <- read.csv("C:/Users/npras/Desktop/STAT432/american_bankruptcy.csv")
+head(data)
+```
+
+# Preprocess Data
+```{r}
+# here preparing the ratio to calculate Altman z Score
+data <- data %>%
+  mutate(
+    working_capital = X1 - X14,                      # Working Capital = Current Assets - Current Liabilities
+    
+    # Calculate required ratios for Altman z Score
+    ratio1 = working_capital / X10,                  # Working Capital / Total Assets
+    ratio2 = X15 / X10,                              # Retained Earnings / Total Assets
+    ratio3 = X12 / X10,                              # EBIT / Total Assets
+    ratio4 = X8 / X17,                               # Market Value of Equity / Total Liabilities
+    ratio5 = X9 / X10,                               # Sales / Total Assets
+  )
+
+
+```
+
+```{r}
+# remove redundant variable that already use to calculate ratio
+data_reduced <- data %>%
+  dplyr::select(-X1, -X14, -X10, -X15, -X12, -X8, -X17, -X9, -working_capital)
+```
+
+# calculate survival time
+```{r}
+data_reduced <- data_reduced %>%
+  group_by(company_name) %>%
+  mutate(
+    start_year = min(year),                         
+    survival_time = year - start_year,              
+    event = ifelse(status_label == "failed", 1, 0)  
+  ) %>%
+    slice_tail(n = 1) %>%   # Here we use only the lastest information of each company for survival time        
+  ungroup()                                        
+head(data_reduced)
+```
+
+
+```{r}
+# correlation between variable
+numeric_data <- data_reduced %>%  dplyr::select(-year,-start_year,-event) %>% select_if(is.numeric)
+
+cor_matrix_pearson <- cor(numeric_data, use = "complete.obs", method = 'pearson')  
+
+cor_matrix_spearman <- cor(numeric_data, use = "complete.obs", method = 'spearman')  
+
+library(corrplot)
+corrplot(cor_matrix_pearson, method = "color", type = "upper", 
+         tl.col = "black", tl.srt = 45)
+corrplot(cor_matrix_spearman, method = "color", type = "upper", 
+         tl.col = "black", tl.srt = 45)
+
+```
+
+From correlation, X2,X16 and X18 are almost perfectly correlated
+Then X4 & X13 also almost perfectly correlated
+
+```{r}
+# remove variable that are almost perfectly correlated
+data_reduced <- data_reduced %>%
+  dplyr::select(-c(X16, X18, X13))
+```
+
+# detect outliers
+```{r}
+numeric_cols <- c("X2", "X3", "X4", "X5", "X6", "X7", "X11", "ratio1", "ratio2", "ratio3", "ratio4", "ratio5")
+
+boxplot(data_reduced[, numeric_cols],
+        main = "Boxplot of Numerical Variables",
+        las = 2, 
+        outline = TRUE)
+```
+```{r}
+summary(data_reduced)
+
+```
+
+
+# We can see that the data have heavy-tail -> Log Transformation for variable for non-negative variable 
+
+```{r}
+data_reduced_log <- data_reduced %>%
+  mutate(
+    X3_log = log1p(X3),  # Log transformation for X3
+    X5_log = log1p(X5),  # Log transformation for X5
+    X7_log = log1p(X7),  # Log transformation for X7
+    X11_log = log1p(X11) # Log transformation for X11
+  )
+
+variables <- c("X3", "X5", "X7", "X11")
+
+par(mfrow = c(2, 2))
+
+for (var in variables) {
+  hist(data_reduced_log[[var]], main = paste("Original", var), xlab = var, col = "blue", breaks = 30)
+  hist(data_reduced_log[[paste0(var, "_log")]], main = paste("Log Transformed", var), xlab = paste("Log(", var, ")", sep = ""), col = "green", breaks = 30)
+}
+
+par(mfrow = c(1, 1))
+
+data_reduced_log <- data_reduced_log %>%
+  dplyr::select(-c(X3, X5, X7, X11))
+
+
+```
+# deal with variables X2, X4, X6 that have negative values : Yeo-Johnson transformation
+```{r}
+library(bestNormalize)
+data_reduced_log <- data_reduced_log %>%
+  mutate(
+    X2_log = yeojohnson(X2)$x.t,  # Transformed X2
+    X4_log = yeojohnson(X4)$x.t,  # Transformed X4
+    X6_log = yeojohnson(X6)$x.t   # Transformed X6
+  )
+
+variables <- c("X2", "X4", "X6")
+
+par(mfrow = c(2, 2))
+
+for (var in variables) {
+  hist(data_reduced_log[[var]], main = paste("Original", var), xlab = var, col = "blue", breaks = 30)
+  hist(data_reduced_log[[paste0(var, "_log")]], main = paste("Log Transformed", var), xlab = paste("Log(", var, ")", sep = ""), col = "green", breaks = 30)
+}
+
+par(mfrow = c(1, 1))
+
+data_reduced_log <- data_reduced_log %>%
+  dplyr::select(-c(X2, X4, X6))
+
+```
+
+```{r}
+summary(data_reduced_log)
+
+```
+
+# Splitting Data to Train & Test
+Splitting here did not use k-fold validation. But instead use the year to be the criteria of train and test.
+Might try k-fold to see if there is an improvement.
+
+```{r}
+train_data <- data_reduced_log %>%
+  filter(start_year <= 2011) %>%
+  dplyr::select(-year)
+
+test_data <- data_reduced_log %>%
+  filter(start_year > 2011) %>%
+  dplyr::select(-year)
+
+```
+
+# Discriminant analysis to customize Altman Z score
+Refer to literature review, discriminant analysis model was use to customize Altmanz score and see the improvement. Here we use LDA to scale.
+
+```{r}
+library(MASS)
+lda_model <- lda(status_label ~ ratio1+ratio2+ratio3+ratio4+ratio5, data = train_data)
+
+lda_weights <- lda_model$scaling
+print(lda_weights)
+
+normalized_weights <- lda_weights / sum(abs(lda_weights))
+normalized_weights <- as.vector(normalized_weights[, 1])
+names(normalized_weights) <- rownames(lda_model$scaling)
+print(normalized_weights)
+
+```
+
+# Added Customize Altman Z score for train and test data
+```{r}
+train_data <- train_data %>%
+  mutate(
+    financial_health_score = normalized_weights["ratio1"] * ratio1 +
+                             normalized_weights["ratio2"] * ratio2 +
+                             normalized_weights["ratio3"] * ratio3 +
+                             normalized_weights["ratio4"] * ratio4 +
+                             normalized_weights["ratio5"] * ratio5
+  )
+
+
+test_data <- test_data %>%
+  mutate(
+    financial_health_score = normalized_weights["ratio1"] * ratio1 +
+                             normalized_weights["ratio2"] * ratio2 +
+                             normalized_weights["ratio3"] * ratio3 +
+                             normalized_weights["ratio4"] * ratio4 +
+                             normalized_weights["ratio5"] * ratio5
+  )
+
+head(train_data[c("company_name", "financial_health_score")])
+head(test_data[c("company_name", "financial_health_score")])
+
+```
+
+# Kaplan-Meier Curve
+```{r}
+library(survival)
+library(survminer)
+
+km_surv <- Surv(time = train_data$survival_time, event = train_data$event)
+
+km_fit <- survfit(km_surv ~ 1, data = train_data)
+
+ggsurvplot(
+  km_fit,
+  data = train_data,
+  xlab = "Time (Years)", 
+  ylab = "Survival Probability",
+  title = "Kaplan-Meier Survival Curve",
+  conf.int = TRUE  # Add 95% confidence intervals
+)
+
+```
+
+
+# Survival analysis
+
+## AFT model
+```{r}
+library(survival)
+
+# Filter the data to ensure survival_time > 0
+train_data1 <- train_data %>% filter(survival_time > 0)
+
+aft_distributions <- c("weibull", "lognormal", "exponential", "extreme", "gaussian", "logistic", "loglogistic")
+
+aft_formula <- Surv(survival_time, event) ~ financial_health_score + X2_log + X3_log + X4_log + X5_log + X6_log + X7_log + X11_log
+
+aft_models <- lapply(aft_distributions, function(dist) {
+  survreg(aft_formula, data = train_data1, dist = dist)
+})
+
+aic_values <- data.frame(
+  Model = aft_distributions,
+  AIC = sapply(aft_models, AIC)
+)
+
+# Sort models by AIC (lower is better)
+aic_values <- aic_values %>% arrange(AIC)
+
+print(aic_values)
+
+#choose best model with lowest AIC
+best_model_index <- which.min(aic_values$AIC)
+best_model_name <- aic_values$Model[best_model_index]
+best_model <- aft_models[[best_model_index]]
+
+# the chosen model
+cat("The best model based on AIC is:", best_model_name, "\n")
+
+# Predict survival times for test data
+test_data$aft_predicted_survival <- predict(best_model, newdata = test_data, type = "response")
+
+```
+
+## Cox Proportional Hazards Model with Penalty
+```{r}
+library(glmnet)
+
+cox_x <- as.matrix(train_data1 %>% dplyr::select(financial_health_score, X2_log, X3_log, X4_log, X5_log, X6_log, X7_log, X11_log))
+cox_y <- Surv(train_data1$survival_time, train_data1$event)
+
+# Fit penalized Cox model (LASSO)
+cox_model <- glmnet(cox_x, cox_y, family = "cox", alpha = 1)
+
+# Plot the coefficients as a function of regularization strength
+plot(cox_model)
+
+# Choose the optimal penalty using cross-validation
+cv_cox <- cv.glmnet(cox_x, cox_y, family = "cox", alpha = 1)
+optimal_lambda <- cv_cox$lambda.min
+
+# Fit the Cox model with the optimal lambda
+final_cox_model <- glmnet(cox_x, cox_y, family = "cox", alpha = 1, lambda = optimal_lambda)
+
+# Predict survival risk for test data
+test_data_cox_x <- as.matrix(test_data %>% dplyr::select(financial_health_score, X2_log, X3_log, X4_log, X5_log, X6_log, X7_log, X11_log))
+test_data$cox_predicted_risk <- predict(final_cox_model, newx = test_data_cox_x, type = "link")
+
+```
+
+## Random Survival Forest Model
+```{r}
+library(randomForestSRC)
+
+rsf_model <- rfsrc(Surv(survival_time, event) ~ financial_health_score + X2_log + X3_log + X4_log + X5_log + X6_log + X7_log + X11_log,data = train_data1, ntree = 1000)
+
+print(rsf_model)
+
+# Predict survival for the test data
+test_data$rsf_predicted_survival <- predict(rsf_model, newdata = test_data)$predicted
+
+```
+
+
+
+# Evaluate Performance
+
+## C index
+```{r}
+library(survcomp)
+
+aft_cindex <- concordance.index(test_data$aft_predicted_survival, 
+                                surv.time = test_data$survival_time, 
+                                surv.event = test_data$event)$c.index
+
+cox_cindex <- concordance.index(test_data$cox_predicted_risk, 
+                                 surv.time = test_data$survival_time, 
+                                 surv.event = test_data$event)$c.index
+
+rsf_cindex <- concordance.index(test_data$rsf_predicted_survival, 
+                                 surv.time = test_data$survival_time, 
+                                 surv.event = test_data$event)$c.index
+
+cat("C-index for AFT model:", aft_cindex, "\n")
+cat("C-index for Cox model:", cox_cindex, "\n")
+cat("C-index for Random Survival Forest:", rsf_cindex, "\n")
+
